@@ -776,3 +776,782 @@ export default function App() {
     </div>
   );
 }
+
+                          import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  Printer, Save, Plus, Trash2, FileText, Settings, Lock, Unlock, Users, 
+  LayoutDashboard, Database as DatabaseIcon, PrinterCheck, Search,
+  CheckCircle2, AlertCircle, ChevronRight, Layers, GraduationCap,
+  X, AlertTriangle, CalendarDays, ChevronDown, UserCircle, BookOpen, 
+  Award, PenTool, FileUp, FileDown, Camera, Cloud, Download, RefreshCw, 
+  Check, ClipboardList, Info, Building2
+} from 'lucide-react';
+
+// --- FIREBASE IMPORTS ---
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+
+/**
+ * ============================================================
+ * SISTEM MANAJEMEN NILAI (DKN) - SMAINUMA (VERSI FINAL PREVIEW)
+ * STATUS: FIXED DOM NESTING & ENV COMPATIBILITY
+ * LOGIC: 70% NR (S1-6) + 30% PSAJ (Tugas+Praktek+Tulis)
+ * ============================================================
+ */
+
+const SUBJECTS = [
+  { id: 'pai', name: 'Pendidikan Agama dan Budi Pekerti', category: 'A' },
+  { id: 'ppkn', name: 'Pendidikan Pancasila dan Kewarganegaraan', category: 'A' },
+  { id: 'indo', name: 'Bahasa Indonesia', category: 'A' },
+  { id: 'mtk_u', name: 'Matematika Umum', category: 'A' },
+  { id: 'sej_i', name: 'Sejarah Indonesia', category: 'A' },
+  { id: 'ingg', name: 'Bahasa Inggris', category: 'A' },
+  { id: 'seni', name: 'Seni Budaya', category: 'B' },
+  { id: 'pjok', name: 'Pendidikan Jasmani, Olahraga, dan Kesehatan', category: 'B' },
+  { id: 'pkwu', name: 'PKWU', category: 'B' },
+  { id: 'jawa', name: 'Muatan Lokal Bahasa Jawa', category: 'B' },
+  { id: 'mtk_p', name: 'Matematika Peminatan', category: 'C' },
+  { id: 'bio', name: 'Biologi', category: 'C' },
+  { id: 'fis', name: 'Fisika', category: 'C' },
+  { id: 'kim', name: 'Kimia', category: 'C' },
+  { id: 'arab', name: 'Bahasa Arab', category: 'C' },
+];
+
+// FUNGSI DETEKSI FIREBASE CONFIG AMAN (PREVIEW & VERCEL READY)
+// Menggunakan Dynamic Function untuk menghindari ES2015 target build error
+const getFirebaseConfig = () => {
+  if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+    try { return JSON.parse(__firebase_config); } catch (e) { return {}; }
+  }
+  let env = {};
+  try { env = new Function('return import.meta.env')(); } catch (e) { env = {}; }
+  return {
+    apiKey: env.VITE_FIREBASE_API_KEY || "",
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || "",
+    projectId: env.VITE_FIREBASE_PROJECT_ID || "",
+    storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || "",
+    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+    appId: env.VITE_FIREBASE_APP_ID || ""
+  };
+};
+
+const firebaseConfig = getFirebaseConfig();
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appIdProd = typeof __app_id !== 'undefined' ? __app_id : "smainuma-prod-final";
+
+// HELPERS
+const formatNama = (name) => (typeof name === 'string' ? name.toUpperCase() : "");
+const calculateAvg = (values) => {
+  const filtered = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
+  return filtered.length === 0 ? 0 : filtered.reduce((a, b) => a + b, 0) / filtered.length;
+};
+
+const loadXLSX = () => {
+  return new Promise((resolve) => {
+    if (window.XLSX) return resolve(window.XLSX);
+    const script = document.createElement('script');
+    script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+    script.onload = () => resolve(window.XLSX);
+    document.head.appendChild(script);
+  });
+};
+
+export default function App() {
+  // --- UI & NAVIGASI ---
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeSubTab, setActiveSubTab] = useState('profil');
+  const [activeSemester, setActiveSemester] = useState(1);
+  const [activeReport, setActiveReport] = useState('skl');
+  const [printScope, setPrintScope] = useState('bulk');
+  const [targetStudentId, setTargetStudentId] = useState('');
+  const [user, setUser] = useState(null);
+  
+  // --- DATA UTAMA ---
+  const [classes, setClasses] = useState([{ id: 'default', name: 'XII MIPA 1' }]);
+  const [selectedClassId, setSelectedClassId] = useState('default');
+  const [students, setStudents] = useState([]);
+  const [selectedStudentId, setSelectedStudentId] = useState(null);
+  const [academicYears, setAcademicYears] = useState(['2024/2025']);
+  const [selectedYear, setSelectedYear] = useState('2024/2025');
+  const [schoolLogo, setSchoolLogo] = useState('https://via.placeholder.com/150?text=LOGO');
+  
+  // --- PROFIL SEKOLAH (EDITABLE) ---
+  const [schoolInfo, setSchoolInfo] = useState({
+    name: "SMA Islam Nurul Ulum Malo",
+    npsn: "20577740",
+    address: "Desa Kemiri RT/RW 007/002 Kec. Malo Kab. Bojonegoro",
+    kabupaten: "Bojonegoro",
+    provinsi: "Jawa Timur",
+    kurikulum: "2013",
+    peminatan: "Matematika Ilmu Pengetahuan Alam ( MIPA )",
+    tahunLulus: "2025",
+    kepsek: "MURTI CAHYONO, S.Pd., Gr.",
+    nip: "19660505 199303 1 012",
+    pengawasNama: "Ida Mintarina Nufita, M.Pd",
+    pengawasNip: "19670529 199703 2 004",
+    nomorSuratBase: "421/048/SMAINUMA/V/2025",
+    tglLulus: "05 Mei 2025"
+  });
+
+  const [isLocked, setIsLocked] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showAddClassModal, setShowAddClassModal] = useState(false);
+  const [newClassName, setNewClassName] = useState('');
+  const [showAddYearModal, setShowAddYearModal] = useState(false);
+  const [newYearName, setNewYearName] = useState('');
+  const [showSchoolProfileModal, setShowSchoolProfileModal] = useState(false);
+  const [showSaveSuccessPopUp, setShowSaveSuccessPopUp] = useState(false);
+  const [showCloudPopUp, setShowCloudPopUp] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState('synced'); 
+  const [lastCloudSync, setLastCloudSync] = useState(null);
+  const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+  const [confirmModal, setConfirmModal] = useState({ show: false, title: '', message: '', action: null });
+  
+  const logoInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // --- PERSISTENCE ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) { console.error("Auth Error"); }
+    };
+    initAuth();
+    
+    const unsub = onAuthStateChanged(auth, setUser);
+    const sS = localStorage.getItem('smainuma_vfinal_students');
+    const sC = localStorage.getItem('smainuma_vfinal_classes');
+    const sY = localStorage.getItem('smainuma_vfinal_years');
+    const sL = localStorage.getItem('smainuma_vfinal_logo');
+    const sI = localStorage.getItem('smainuma_vfinal_info');
+    if (sS) setStudents(JSON.parse(sS));
+    if (sC) setClasses(JSON.parse(sC));
+    if (sY) setAcademicYears(JSON.parse(sY));
+    if (sL) setSchoolLogo(sL);
+    if (sI) setSchoolInfo(JSON.parse(sI));
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('smainuma_vfinal_students', JSON.stringify(students));
+    localStorage.setItem('smainuma_vfinal_classes', JSON.stringify(classes));
+    localStorage.setItem('smainuma_vfinal_years', JSON.stringify(academicYears));
+    localStorage.setItem('smainuma_vfinal_logo', schoolLogo);
+    localStorage.setItem('smainuma_vfinal_info', JSON.stringify(schoolInfo));
+  }, [students, classes, academicYears, schoolLogo, schoolInfo]);
+
+  // --- LOGIKA PERHITUNGAN DKN BESAR ---
+  const getCalculatedData = (student) => {
+    if (!student) return { results: {}, overallAvg: "0.00", isLulus: false };
+    const res = {}; let totalNSP = 0; let countSubjects = 0;
+    SUBJECTS.forEach(sub => {
+      const s = student.scores?.[sub.id] || {};
+      const smtValues = [];
+      for(let i=1; i<=6; i++) {
+          const p = parseFloat(s[`smt${i}p`]) || 0;
+          const k = parseFloat(s[`smt${i}k`]) || 0;
+          smtValues[i-1] = (p + k) / 2;
+      }
+      const nr = calculateAvg(smtValues.filter(v => v > 0));
+      const nr70 = nr * 0.7;
+      const psajTugas = parseFloat(s.penugasan) || 0;
+      const psajPraktek = parseFloat(s.praktek) || 0;
+      const psajTulis = parseFloat(s.psaj) || 0;
+      const psajMurni = (psajTugas + psajPraktek + psajTulis) / 3;
+      const psaj30 = psajMurni * 0.3;
+      const nsp = nr70 + psaj30;
+      res[sub.id] = { 
+        smt: smtValues.map(v => v > 0 ? v.toFixed(2) : ""),
+        nr: nr > 0 ? nr.toFixed(2) : "0.00", 
+        nr70: nr70 > 0 ? nr70.toFixed(2) : "0.00",
+        psajMurni: psajMurni > 0 ? psajMurni.toFixed(2) : "0.00",
+        psaj30: psaj30 > 0 ? psaj30.toFixed(2) : "0.00",
+        nsp: nsp > 0 ? nsp.toFixed(2) : "0.00" 
+      };
+      if (nsp > 0) { totalNSP += nsp; countSubjects++; }
+    });
+    const avgNSP = countSubjects > 0 ? (totalNSP / countSubjects).toFixed(2) : "0.00";
+    return { results: res, overallAvg: avgNSP, isLulus: parseFloat(avgNSP) >= 75 };
+  };
+
+  // --- ACTIONS ---
+  const saveToCloud = async () => {
+    if (!user) return; setIsSyncing(true); setCloudStatus('connecting');
+    try {
+      const docRef = doc(db, 'artifacts', appIdProd, 'public', 'data', 'schoolState');
+      await setDoc(docRef, { 
+        students, classes, academicYears, schoolLogo, selectedYear, schoolInfo,
+        lastFinalSave: new Date().toISOString(), savedBy: user.uid 
+      }, { merge: true });
+      setLastCloudSync(new Date()); setIsSyncing(false); setCloudStatus('synced');
+      setShowSaveSuccessPopUp(true);
+    } catch (e) { setIsSyncing(false); setCloudStatus('error'); }
+  };
+
+  const showToast = (msg, type = 'success') => {
+    setToast({ show: true, message: msg, type });
+    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
+  };
+
+  const addClass = () => {
+    if (newClassName.trim()) {
+      setClasses([...classes, { id: Date.now().toString(), name: newClassName.trim().toUpperCase() }]);
+      setNewClassName(''); setShowAddClassModal(false);
+    }
+  };
+
+  const addYear = () => {
+    if (newYearName.trim()) {
+      setAcademicYears([...academicYears, newYearName.trim()].sort());
+      setSelectedYear(newYearName.trim());
+      setNewYearName(''); setShowAddYearModal(false);
+    }
+  };
+
+  const filteredStudents = useMemo(() => 
+    students.filter(s => s.kelasId === selectedClassId && (formatNama(s.nama).includes(searchTerm.toUpperCase()) || s.nisn?.includes(searchTerm))), 
+  [students, selectedClassId, searchTerm]);
+
+  const stats = useMemo(() => {
+    const classS = students.filter(s => s.kelasId === selectedClassId);
+    return { total: classS.length, lulus: classS.filter(s => getCalculatedData(s).isLulus).length };
+  }, [students, selectedClassId]);
+
+  const selectedStudent = useMemo(() => 
+    students.find(s => s.id === selectedStudentId) || null, 
+  [students, selectedStudentId]);
+
+  const studentsToPrint = useMemo(() => {
+    if (printScope === 'single' && targetStudentId) {
+      return students.filter(s => s.id === targetStudentId);
+    }
+    return students.filter(s => s.kelasId === selectedClassId);
+  }, [students, selectedClassId, printScope, targetStudentId]);
+
+  const handleImport = async (e, type) => {
+    const file = e.target.files[0]; if (!file) return;
+    const XLSX = await loadXLSX();
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const wb = XLSX.read(evt.target.result, { type: 'binary' });
+        const data = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+        const updated = [...students];
+        data.forEach(row => {
+          const name = (row.Nama || "").toUpperCase();
+          if (!name) return;
+          let sIdx = updated.findIndex(s => String(s.nisn) === String(row.NISN) || s.nama?.toUpperCase() === name);
+          if (sIdx === -1) {
+            const newId = Date.now().toString() + Math.random();
+            updated.push({ id: newId, kelasId: selectedClassId, nama: name, scores: {} });
+            sIdx = updated.length - 1;
+          }
+          if (type === 'profil') {
+            updated[sIdx] = { ...updated[sIdx], nis: row.NIS, tempatLahir: row['Tempat Lahir'], tglLahir: row['Tanggal Lahir'], ortu: row['Nama Wali'] };
+          } else if (type === 'semester') {
+            SUBJECTS.forEach(sub => {
+              if (!updated[sIdx].scores[sub.id]) updated[sIdx].scores[sub.id] = {};
+              updated[sIdx].scores[sub.id][`smt${activeSemester}p`] = row[`${sub.name} (P)`] || 0;
+              updated[sIdx].scores[sub.id][`smt${activeSemester}k`] = row[`${sub.name} (K)`] || 0;
+            });
+          } else {
+            const key = type === 'tugas' ? 'penugasan' : type === 'praktek' ? 'praktek' : 'psaj';
+            SUBJECTS.forEach(sub => {
+              if (!updated[sIdx].scores[sub.id]) updated[sIdx].scores[sub.id] = {};
+              updated[sIdx].scores[sub.id][key] = row[sub.name] || 0;
+            });
+          }
+        });
+        setStudents(updated);
+        showToast("Impor Berhasil");
+      } catch (err) { showToast("Gagal Impor", "error"); }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = "";
+  };
+
+  const downloadTemplate = async (type) => {
+    const XLSX = await loadXLSX();
+    let data = [{ Nama: 'BUDI SANTOSO', NIS: '1234', NISN: '0012345678', 'Tempat Lahir': 'BOJONEGORO', 'Tanggal Lahir': '2007-01-01', 'Nama Wali': 'SUTRISNO' }];
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Data");
+    XLSX.writeFile(wb, `Template_${type}.xlsx`);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex font-sans text-slate-900 overflow-x-hidden selection:bg-emerald-100">
+      
+      {toast.show && (
+        <div className={`fixed top-6 right-6 z-[200] px-6 py-4 rounded-2xl shadow-2xl animate-in slide-in-from-right-10 flex items-center gap-3 text-white font-bold text-sm ${toast.type === 'success' ? 'bg-emerald-600' : 'bg-red-600'}`}>
+          {toast.type === 'success' ? <CheckCircle2 size={20}/> : <AlertCircle size={20}/>}
+          {toast.message}
+        </div>
+      )}
+
+      {/* --- SIDEBAR --- */}
+      <aside className="w-64 bg-[#064e3b] text-white flex flex-col fixed inset-y-0 z-40 print:hidden shadow-2xl">
+        <div className="pt-10 pb-6 flex flex-col items-center text-center px-4">
+          <div className="relative group mb-5">
+            <div className="w-24 h-24 bg-white/10 rounded-3xl p-3 border border-white/20 flex items-center justify-center overflow-hidden shadow-lg group-hover:bg-white/20 transition-all cursor-pointer">
+              <img src={schoolLogo} alt="Logo" className="w-full h-full object-contain filter drop-shadow-lg" />
+            </div>
+            <button onClick={() => logoInputRef.current.click()} className="absolute inset-0 flex flex-col items-center justify-center bg-emerald-950/80 rounded-3xl opacity-0 group-hover:opacity-100 transition-opacity">
+              <Camera size={24} className="text-emerald-400 mb-1" />
+              <span className="text-[10px] font-black uppercase tracking-widest text-white">Ganti Logo</span>
+            </button>
+            <input type="file" ref={logoInputRef} className="hidden" accept="image/*" onChange={(e) => {
+              if (e.target.files[0]) {
+                const reader = new FileReader();
+                reader.onload = () => setSchoolLogo(reader.result);
+                reader.readAsDataURL(e.target.files[0]);
+              }
+            }} />
+          </div>
+          <h1 className="text-lg font-black leading-none uppercase tracking-tighter">SMAINUMA</h1>
+          <p className="text-[10px] font-bold text-emerald-400 mt-2 uppercase tracking-widest opacity-80">Management System</p>
+        </div>
+        
+        <nav className="flex-1 px-4 space-y-1.5 mt-6 overflow-y-auto">
+          <button onClick={() => setActiveTab('dashboard')} className={`w-full flex items-center gap-3 px-5 py-3 rounded-2xl text-sm font-bold transition-all ${activeTab === 'dashboard' ? 'bg-white/15 text-white shadow-inner' : 'text-emerald-100/60 hover:text-white hover:bg-white/5'}`}>
+            <LayoutDashboard size={18} /> Dashboard
+          </button>
+          
+          <div className="pt-4 pb-1 px-5 text-[10px] font-black text-emerald-400/50 uppercase tracking-[0.2em]">Database Siswa</div>
+          {[
+            { id: 'profil', label: 'Profil Siswa', icon: UserCircle },
+            { id: 'semester', label: 'Nilai Rapor', icon: BookOpen },
+            { id: 'tugas', label: 'Penugasan', icon: ClipboardList },
+            { id: 'praktek', label: 'Praktek & Portofolio', icon: Award },
+            { id: 'psaj', label: 'Nilai PSAJ Tulis', icon: PenTool }
+          ].map(m => (
+            <button key={m.id} onClick={() => { setActiveTab('input'); setActiveSubTab(m.id); }} className={`w-full flex items-center gap-3 px-5 py-3 rounded-2xl text-xs font-bold transition-all ${activeTab === 'input' && activeSubTab === m.id ? 'bg-white/15 text-white shadow-inner border border-white/5' : 'text-emerald-100/60 hover:text-white hover:bg-white/5'}`}>
+              <m.icon size={16} /> {m.label}
+            </button>
+          ))}
+          
+          <button onClick={() => setActiveTab('rekap')} className={`w-full flex items-center gap-3 px-5 py-3 rounded-2xl text-sm font-bold mt-4 transition-all ${activeTab === 'rekap' ? 'bg-white/15 text-white shadow-inner' : 'text-emerald-100/60 hover:text-white'}`}>
+            <PrinterCheck size={18} /> Cetak Laporan
+          </button>
+        </nav>
+
+        <div className="p-6 border-t border-white/5 space-y-4">
+          <button 
+            onClick={saveToCloud} 
+            disabled={isSyncing}
+            className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl text-[10px] font-black uppercase transition-all shadow-xl active:scale-95 ${isSyncing ? 'bg-blue-600/50 cursor-wait' : 'bg-blue-600 hover:bg-blue-500 animate-pulse'}`}
+          >
+             {isSyncing ? <RefreshCw className="animate-spin" size={14} /> : <Save size={14} />} Simpan Cloud
+          </button>
+        </div>
+      </aside>
+
+      {/* --- MAIN CONTENT --- */}
+      <main className="flex-1 ml-64 min-h-screen flex flex-col print:ml-0 bg-slate-50 transition-all">
+        <header className="h-20 bg-white/80 backdrop-blur-md border-b border-slate-200 px-10 flex items-center justify-between sticky top-0 z-30 print:hidden">
+          <div className="flex items-center gap-4">
+            <div className="h-10 w-1 bg-emerald-600 rounded-full"></div>
+            <h2 className="text-sm font-black text-slate-800 uppercase tracking-tight truncate max-w-[300px]">{schoolInfo.name}</h2>
+          </div>
+          
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2 px-4 py-2 bg-emerald-50 rounded-full border border-emerald-100">
+               <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]"></div>
+               <span className="text-[10px] font-black text-emerald-700 uppercase tracking-widest">Real-time Local</span>
+            </div>
+
+            <button onClick={() => setShowCloudPopUp(true)} className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-full transition-all border border-slate-200 group text-slate-600">
+              <div className={`w-2 h-2 rounded-full ${cloudStatus === 'synced' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse' : cloudStatus === 'connecting' ? 'bg-blue-500 animate-bounce' : 'bg-red-500'}`}></div>
+              <span className="text-[10px] font-black group-hover:text-slate-900 uppercase">{cloudStatus === 'synced' ? 'Cloud Terhubung' : cloudStatus === 'connecting' ? 'Menyinkronkan' : 'Offline'}</span>
+            </button>
+            
+            <div className="relative group">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-emerald-600 transition-colors" size={16} />
+              <input type="text" placeholder="Cari Siswa..." className="bg-slate-100 border-none rounded-full py-2.5 pl-10 pr-6 text-xs font-bold w-64 focus:ring-2 focus:ring-emerald-500/20 focus:bg-white transition-all outline-none" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+            </div>
+          </div>
+        </header>
+
+        <div className="p-8 flex-1">
+          
+          {/* TAB DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-10 animate-in fade-in duration-500 text-slate-800">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                 <div className="space-y-4">
+                    <div className="flex items-center justify-between px-2 font-black text-[10px] text-slate-400 uppercase tracking-widest">
+                       <div className="flex items-center gap-2 text-blue-600"><CalendarDays size={14} /> Periode Aktif</div>
+                       <button onClick={() => setShowAddYearModal(true)} className="bg-blue-50 text-blue-600 px-3 py-1.5 rounded-full hover:bg-blue-600 hover:text-white transition-all font-black text-[9px] shadow-sm uppercase tracking-widest">Tambah</button>
+                    </div>
+                    <div className="relative group">
+                       <select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} className="w-full bg-white border-2 border-slate-100 rounded-[28px] px-8 py-5 text-base font-black shadow-sm appearance-none outline-none focus:ring-4 focus:ring-blue-500/10 cursor-pointer transition-all uppercase text-slate-900">
+                          {academicYears.map(year => <option key={year} value={year}>Tahun Pelajaran {year}</option>)}
+                       </select>
+                       <ChevronDown className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" size={20} />
+                    </div>
+                 </div>
+
+                 <div className="space-y-4">
+                    <div className="flex items-center justify-between px-2 font-black text-[10px] text-slate-400 uppercase tracking-widest">
+                       <div className="flex items-center gap-2 text-emerald-600"><Building2 size={14} /> Profil Sekolah</div>
+                       <button onClick={() => setShowSchoolProfileModal(true)} className="bg-emerald-50 text-emerald-600 px-4 py-1.5 rounded-full hover:bg-emerald-600 hover:text-white transition-all font-black text-[9px] shadow-sm uppercase flex items-center gap-2"><Settings size={12}/> Atur Profil</button>
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-black">
+                      {classes.map((cls) => (
+                        <div key={cls.id} className="relative group">
+                          <button onClick={() => setSelectedClassId(cls.id)} className={`px-6 py-4 rounded-[24px] border-2 transition-all flex flex-col items-start min-w-[150px] ${selectedClassId === cls.id ? 'bg-emerald-600 border-emerald-600 text-white shadow-xl scale-105' : 'bg-white border-slate-200 text-slate-600 shadow-sm hover:border-emerald-300'}`}>
+                            <span className={`text-[8px] font-black uppercase mb-1 ${selectedClassId === cls.id ? 'text-emerald-100' : 'text-slate-400'}`}>KELAS</span>
+                            <span className="text-sm font-black uppercase">{cls.name}</span>
+                          </button>
+                          <button onClick={() => {
+                                setConfirmModal({
+                                    show: true, title: 'Hapus Kelas', message: `Hapus kelas "${cls.name}"? Data siswa di dalamnya akan ikut terhapus.`,
+                                    action: () => { setClasses(prev => prev.filter(c => c.id !== cls.id)); setStudents(prev => prev.filter(s => s.kelasId !== cls.id)); setConfirmModal({ show: false }); }
+                                });
+                            }} className="absolute -top-2 -right-2 w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-lg hover:bg-red-600 hover:scale-110 z-10"><Trash2 size={14} /></button>
+                        </div>
+                      ))}
+                      <button onClick={() => setShowAddClassModal(true)} className="px-6 py-4 rounded-[24px] border-2 border-dashed border-slate-300 text-slate-400 hover:border-emerald-500 hover:text-emerald-600 transition-all font-black text-sm min-w-[150px] flex items-center justify-center">+</button>
+                    </div>
+                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div className="bg-white p-8 rounded-[40px] shadow-sm border border-slate-100">
+                   <Users className="text-emerald-600 mb-4" size={26} />
+                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Siswa</p>
+                   <h3 className="text-4xl font-black mt-1 uppercase tracking-tighter text-slate-900">{stats.total}</h3>
+                </div>
+                <div className="bg-white p-8 rounded-[40px] shadow-sm border border-slate-100">
+                   <CheckCircle2 className="text-blue-600 mb-4" size={26} />
+                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Lulus</p>
+                   <h3 className="text-4xl font-black mt-1 uppercase tracking-tighter text-slate-900">{stats.lulus}</h3>
+                </div>
+                <div onClick={() => setShowCloudPopUp(true)} className="bg-white p-8 rounded-[40px] shadow-sm border border-slate-100 flex flex-col justify-center cursor-pointer hover:border-blue-200 transition-all">
+                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Koneksi Cloud</p>
+                   <div className="flex items-center gap-3 mt-3">
+                      <div className={`w-3 h-3 rounded-full ${cloudStatus === 'synced' ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500'}`}></div>
+                      <h3 className="text-xl font-black uppercase text-slate-900">Online</h3>
+                   </div>
+                </div>
+                <div className="bg-[#064e3b] p-8 rounded-[40px] text-white shadow-xl flex flex-col justify-between h-full relative overflow-hidden group">
+                   <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl group-hover:scale-125 transition-transform duration-700"></div>
+                   <div className="relative z-10">
+                      <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.25em] mb-2 opacity-80">KEAMANAN</p>
+                      <h3 className="text-3xl font-black leading-tight uppercase tracking-tight text-white">{isLocked ? 'TERKUNCI' : 'TERBUKA'}</h3>
+                   </div>
+                   <button onClick={() => setIsLocked(!isLocked)} className="relative z-10 mt-6 w-full py-5 rounded-[30px] border-2 border-white/20 flex flex-col items-center justify-center gap-1.5 hover:bg-white/5 transition-all active:scale-95 group/btn text-white">
+                      <div className="text-white group-hover/btn:scale-110 transition-transform">{isLocked ? <Unlock size={22} strokeWidth={2.5}/> : <Lock size={22} strokeWidth={2.5}/>}</div>
+                      <span className="font-black text-[12px] uppercase tracking-[0.3em] text-white">{isLocked ? 'BUKA' : 'KUNCI'}</span>
+                   </button>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-[40px] shadow-sm border border-slate-200 overflow-hidden text-slate-900">
+                 <div className="px-10 py-8 border-b border-slate-100 flex items-center justify-between bg-slate-50/30 text-slate-800">
+                    <div className="flex flex-col gap-1">
+                       <h3 className="text-lg font-black tracking-tight flex items-center gap-3 uppercase text-emerald-900"><GraduationCap className="text-emerald-600" size={20} /> Siswa Kelas {classes.find(c => c.id === selectedClassId)?.name}</h3>
+                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">Data Lokal • TP {selectedYear}</p>
+                    </div>
+                    <div className="flex gap-3">
+                       <button onClick={() => setActiveTab('rekap')} className="p-3 bg-white hover:bg-emerald-50 text-emerald-600 border border-slate-200 rounded-2xl shadow-sm transition-all"><Printer size={18} /></button>
+                    </div>
+                 </div>
+                 <div className="overflow-x-auto text-slate-700">
+                    <table className="w-full text-left border-collapse text-slate-700">
+                       <thead><tr className="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                          <th className="px-10 py-5">Nama Siswa</th><th className="px-6 py-5">NIS/NISN</th><th className="px-6 py-5">Rata NSP</th><th className="px-6 py-5">Status</th><th className="px-10 py-5 text-right">Aksi</th>
+                       </tr></thead>
+                       <tbody className="divide-y divide-slate-50 text-black">
+                        {filteredStudents.map((s) => { const data = getCalculatedData(s); return ( 
+                          <tr key={s.id} className="hover:bg-slate-50 transition-all group cursor-pointer" onClick={() => { setSelectedStudentId(s.id); setActiveTab('input'); setActiveSubTab('profil'); }}>
+                             <td className="px-10 py-6 text-slate-900">
+                                <div className="flex items-center gap-4">
+                                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-xs ${data.isLulus ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>{s.nama?.charAt(0) || '?'}</div>
+                                   <div><p className="font-black text-sm uppercase tracking-tight text-black">{formatNama(s.nama)}</p><p className="text-[10px] font-bold text-slate-400 mt-0.5 uppercase">{s.tempatLahir}, {s.tglLahir}</p></div>
+                                </div>
+                             </td>
+                             <td className="px-6 py-6 text-xs font-medium text-slate-600 tracking-wider">
+                                <span className="block text-black font-black uppercase">{s.nis || '-'}</span><span className="text-[10px] text-slate-400 uppercase tracking-tighter font-black">NISN: {s.nisn || '-'}</span>
+                             </td>
+                             <td className="px-6 py-6 font-black text-lg text-slate-800">{data.overallAvg}</td>
+                             <td className="px-6 py-6">
+                                <span className={`inline-flex items-center px-3 py-1 rounded-full text-[9px] font-black uppercase ${data.isLulus ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>{data.isLulus ? 'LULUS' : 'REMIDIAL'}</span>
+                             </td>
+                             <td className="px-10 py-6 text-right"><button className="p-2 text-slate-300 hover:text-emerald-600 transition-all"><ChevronRight size={20} /></button></td>
+                          </tr> 
+                        ); })}
+                    </tbody></table>
+                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB INPUT NILAI */}
+          {activeTab === 'input' && (
+            <div className="animate-in slide-in-from-right-8 duration-500 flex flex-col gap-6 h-full text-slate-800">
+              <div className="bg-white p-8 rounded-[40px] border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-6 text-black">
+                 <div className="flex items-center gap-4">
+                    <div className="p-4 bg-emerald-100 text-emerald-600 rounded-3xl"><DatabaseIcon size={28}/></div>
+                    <div><h2 className="text-2xl font-black text-slate-800 uppercase leading-none">{activeSubTab === 'semester' ? `Entri Rapor S${activeSemester}` : `Database ${activeSubTab}`}</h2><p className="text-xs text-slate-400 font-bold mt-1 uppercase tracking-widest">Update Data</p></div>
+                 </div>
+                 <div className="flex items-center gap-3">
+                    <button onClick={() => downloadTemplate(activeSubTab)} className="px-5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest">Template</button>
+                    <button onClick={() => fileInputRef.current.click()} className="px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-lg shadow-blue-100 transition-all">Impor Excel</button>
+                    <input type="file" ref={fileInputRef} className="hidden" accept=".xlsx,.xls" onChange={(e) => handleImport(e, activeSubTab)} />
+                    <button onClick={() => { const nid = Date.now().toString(); setStudents([...students, { id: nid, kelasId: selectedClassId, nama: 'BARU', scores: {} }]); setSelectedStudentId(nid); }} className="px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-[10px] font-black uppercase shadow-lg shadow-emerald-100 transition-all">+ Siswa</button>
+                 </div>
+              </div>
+
+              {activeSubTab === 'semester' && ( 
+                 <div className="flex items-center gap-2 bg-white p-2.5 rounded-3xl border border-slate-100 shadow-sm self-start">
+                    {[1,2,3,4,5,6].map(i => ( <button key={i} onClick={() => setActiveSemester(i)} className={`w-12 h-12 rounded-2xl text-sm font-black transition-all ${activeSemester === i ? 'bg-emerald-600 text-white shadow-lg scale-110' : 'bg-slate-50 text-slate-400 hover:bg-slate-100'}`}>S{i}</button> ))} 
+                 </div> 
+              )}
+
+              <div className="grid grid-cols-12 gap-8 flex-1 min-h-[500px] text-black">
+                 <div className="col-span-12 lg:col-span-3 bg-white rounded-[40px] border border-slate-200 shadow-sm overflow-hidden flex flex-col max-h-[750px]">
+                    <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                       <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Daftar Siswa</h4>
+                       <span className="px-2 py-0.5 bg-slate-200 text-slate-500 rounded text-[9px] font-black">{filteredStudents.length}</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-1.5 custom-scrollbar text-black">
+                       {filteredStudents.map(s => ( <button key={s.id} onClick={() => setSelectedStudentId(s.id)} className={`w-full p-4 rounded-2xl text-left transition-all flex items-center justify-between group ${selectedStudentId === s.id ? 'bg-emerald-600 text-white shadow-xl scale-[1.02]' : 'hover:bg-slate-50 text-slate-600 hover:text-emerald-700'}`}><div className="truncate pr-4 font-black text-[11px] uppercase text-black">{s.nama}</div><ChevronRight size={14} className={selectedStudentId === s.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-40'} /></button> ))}
+                    </div>
+                 </div>
+
+                 <div className="col-span-12 lg:col-span-9 bg-white rounded-[40px] border border-slate-200 shadow-sm p-10 overflow-hidden flex flex-col text-black">
+                    {selectedStudent ? (
+                       <div className="h-full flex flex-col animate-in slide-in-from-bottom-4 duration-300">
+                          {activeSubTab === 'profil' ? (
+                             <div className="grid grid-cols-2 gap-8 text-slate-800">
+                                <div className="col-span-2 space-y-2 text-black font-bold"><label className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-widest">Nama Lengkap</label><input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 font-black text-xl outline-none focus:ring-4 focus:ring-emerald-500/10 uppercase text-slate-800" value={selectedStudent.nama} onChange={(e) => { setStudents(students.map(st => st.id === selectedStudentId ? { ...st, nama: e.target.value.toUpperCase() } : st)); }} /></div>
+                                <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-widest">NIS</label><input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-3.5 uppercase text-slate-800 font-black" value={selectedStudent.nis || ''} onChange={(e) => { setStudents(students.map(st => st.id === selectedStudentId ? { ...st, nis: e.target.value } : st)); }}/></div>
+                                <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-widest">NISN</label><input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-3.5 font-black uppercase text-slate-800" value={selectedStudent.nisn || ''} onChange={(e) => { setStudents(students.map(st => st.id === selectedStudentId ? { ...st, nisn: e.target.value } : st)); }}/></div>
+                                <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-widest">Tempat Lahir</label><input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-3.5 font-black uppercase text-slate-800" value={selectedStudent.tempatLahir || ''} onChange={(e) => { setStudents(students.map(st => st.id === selectedStudentId ? { ...st, tempatLahir: e.target.value } : st)); }}/></div>
+                                <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-widest">Tanggal</label><input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-3.5 font-black uppercase text-slate-800" placeholder="01-01-2007" value={selectedStudent.tglLahir || ''} onChange={(e) => { setStudents(students.map(st => st.id === selectedStudentId ? { ...st, tglLahir: e.target.value } : st)); }}/></div>
+                                <div className="col-span-2 space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-widest">Nama Wali</label><input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 font-bold uppercase text-slate-800" value={selectedStudent.ortu || ''} onChange={(e) => { setStudents(students.map(st => st.id === selectedStudentId ? { ...st, ortu: e.target.value } : st)); }}/></div>
+                                <div className="col-span-2 pt-10 border-t border-slate-100 mt-4 flex justify-end"><button onClick={() => { setConfirmModal({ title: 'Hapus Siswa', message: `Hapus seluruh data ${selectedStudent.nama}?`, action: () => { setStudents(students.filter(st => st.id !== selectedStudentId)); setSelectedStudentId(null); setConfirmModal({show:false}); } }); }} className="text-red-500 font-black text-[10px] uppercase flex items-center gap-2 hover:bg-red-50 px-6 py-3 rounded-2xl transition-all"><Trash2 size={16}/> Hapus Data Siswa</button></div>
+                             </div>
+                          ) : (
+                             <div className="flex-1 flex flex-col overflow-hidden text-slate-700">
+                                <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar text-black">
+                                   <table className="w-full text-left border-collapse text-slate-800 text-center">
+                                      <thead className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 sticky top-0 bg-white z-10">
+                                         <tr>
+                                            <th className="py-4 px-2 tracking-tighter">Mapel (K13)</th>
+                                            {activeSubTab === 'semester' ? (
+                                               <React.Fragment><th className="py-4 text-center w-28 bg-blue-50/30 text-blue-600">P</th><th className="py-4 text-center w-28 bg-emerald-50/30 text-emerald-600">K</th></React.Fragment>
+                                            ) : (
+                                               <th className="py-4 text-center w-32 bg-slate-50/50 tracking-tighter text-slate-900">Nilai</th>
+                                            )}
+                                         </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-50">
+                                         {SUBJECTS.map(sub => (
+                                            <tr key={sub.id} className="hover:bg-slate-50 transition-all group text-black">
+                                               <td className="py-4 px-2 font-bold text-slate-700 text-[13px]">{sub.name}</td>
+                                               {activeSubTab === 'semester' ? (
+                                                  <React.Fragment><td className="py-2 text-center bg-blue-50/10"><input type="number" className="w-16 h-10 text-center font-black border border-slate-200 rounded-xl outline-none focus:ring-4 focus:ring-blue-500/10 transition-all text-slate-800" value={selectedStudent.scores?.[sub.id]?.[`smt${activeSemester}p`] || ''} onChange={(e) => { const updated = students.map(st => { if (st.id !== selectedStudentId) return st; const sc = { ...st.scores }; if (!sc[sub.id]) sc[sub.id] = {}; sc[sub.id][`smt${activeSemester}p`] = e.target.value; return { ...st, scores: sc }; }); setStudents(updated); }}/></td><td className="py-2 text-center bg-emerald-50/10"><input type="number" className="w-16 h-10 text-center font-black border border-slate-200 rounded-xl outline-none focus:ring-4 focus:ring-emerald-500/10 transition-all text-slate-800" value={selectedStudent.scores?.[sub.id]?.[`smt${activeSemester}k`] || ''} onChange={(e) => { const updated = students.map(st => { if (st.id !== selectedStudentId) return st; const sc = { ...st.scores }; if (!sc[sub.id]) sc[sub.id] = {}; sc[sub.id][`smt${activeSemester}k`] = e.target.value; return { ...st, scores: sc }; }); setStudents(updated); }}/></td></React.Fragment>
+                                               ) : (
+                                                  <td className="py-2 text-center bg-slate-50/10"><input type="number" className="w-24 h-10 text-center font-black border border-slate-200 rounded-xl outline-none focus:ring-4 focus:ring-emerald-500/10 transition-all text-slate-800" value={selectedStudent.scores?.[sub.id]?.[activeSubTab === 'tugas' ? 'penugasan' : activeSubTab] || ''} onChange={(e) => { const key = activeSubTab === 'tugas' ? 'penugasan' : activeSubTab; const updated = students.map(st => { if (st.id !== selectedStudentId) return st; const sc = { ...st.scores }; if (!sc[sub.id]) sc[sub.id] = {}; sc[sub.id][key] = e.target.value; return { ...st, scores: sc }; }); setStudents(updated); }}/></td>
+                                               )}
+                                            </tr>
+                                         ))}
+                                      </tbody>
+                                   </table>
+                                </div>
+                             </div>
+                          )}
+                       </div>
+                    ) : ( 
+                       <div className="h-full flex flex-col items-center justify-center text-slate-300 text-center space-y-4">
+                          <Users size={64} className="opacity-10" />
+                          <div><p className="font-black uppercase tracking-widest text-[11px]">Pilih Nama</p></div>
+                       </div> 
+                    )}
+                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB REKAP / CETAK */}
+          {activeTab === 'rekap' && (
+            <div className="animate-in fade-in duration-700 space-y-12">
+               <div className="bg-[#064e3b] p-12 rounded-[60px] shadow-2xl relative overflow-hidden flex flex-col items-center justify-center border border-white/5">
+                  <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-white/20 via-transparent to-transparent"></div>
+                  <div className="relative z-10 w-full max-w-5xl text-white">
+                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 text-black font-black uppercase text-center">
+                        {[ { id: 'skl', title: 'SKL', icon: <FileText size={36} strokeWidth={2}/> }, { id: 'dkn', title: 'DKN', icon: <Layers size={36} strokeWidth={2}/> }, { id: 'ijazah', title: 'IJAZAH', icon: <Award size={36} strokeWidth={2}/> }, { id: 'raport', title: 'NILAI RAPOR', icon: <BookOpen size={36} strokeWidth={2}/> }, { id: 'psaj', title: 'PSAJ', icon: <PenTool size={36} strokeWidth={2}/> }].map((item) => (
+                          <div key={item.id} onClick={() => setActiveReport(item.id)} className={`flex flex-col items-center justify-center p-10 rounded-[45px] cursor-pointer transition-all duration-300 border-2 ${activeReport === item.id ? 'bg-white text-[#064e3b] border-white shadow-2xl scale-105' : 'bg-[#ffffff15] text-white border-transparent hover:bg-[#ffffff25]'}`}><div className="mb-5">{item.icon}</div><span className="text-[12px] font-black uppercase tracking-widest text-center">{item.title}</span></div>
+                        ))}
+                     </div>
+                  </div>
+                  <div className="mt-16 w-full max-w-2xl bg-white/5 p-8 rounded-[50px] border border-white/10 backdrop-blur-md text-white text-center">
+                     <div className="flex flex-col md:flex-row items-center justify-between gap-10">
+                        <div className="flex-1 space-y-4 text-left uppercase text-white">
+                           <h3 className="text-white font-black uppercase text-[10px] tracking-[0.3em] opacity-50 ml-1">OPSI CETAK</h3>
+                           <div className="flex gap-2 p-1.5 bg-black/30 rounded-[24px]">
+                              <button onClick={() => setPrintScope('bulk')} className={`flex-1 py-3.5 rounded-[18px] text-[11px] font-black tracking-widest transition-all ${printScope === 'bulk' ? 'bg-white text-[#064e3b] shadow-xl' : 'text-white/60 hover:text-white'}`}>KOLEKTIF</button>
+                              <button onClick={() => setPrintScope('single')} className={`flex-1 py-3.5 rounded-[18px] text-[11px] font-black tracking-widest transition-all ${printScope === 'single' ? 'bg-white text-[#064e3b] shadow-xl' : 'text-white/60 hover:text-white'}`}>SATUAN</button>
+                           </div>
+                           {printScope === 'single' && ( <div className="animate-in slide-in-from-top-4 duration-300"><select value={targetStudentId} onChange={(e) => setTargetStudentId(e.target.value)} className="w-full bg-[#064e3b]/50 border border-white/10 rounded-[20px] px-5 py-3.5 text-xs font-bold text-white outline-none uppercase transition-all tracking-wider"><option value="">-- PILIH SISWA --</option>{filteredStudents.map(s => <option key={s.id} value={s.id}>{formatNama(s.nama)}</option>)}</select></div> )}
+                        </div>
+                        <div className="flex flex-col items-center gap-4 text-black uppercase">
+                           <button onClick={() => window.print()} disabled={printScope === 'single' && !targetStudentId} className="w-52 bg-white text-[#064e3b] px-10 py-5 rounded-[28px] font-black text-sm shadow-2xl hover:bg-emerald-50 active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-30 disabled:cursor-not-allowed"><Printer size={22} strokeWidth={2.5} /> CETAK A4</button>
+                        </div>
+                     </div>
+                  </div>
+               </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* MODALS */}
+      {showSchoolProfileModal && ( <div className="fixed inset-0 z-[160] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in text-slate-800"><div className="bg-white rounded-[40px] p-10 w-full max-w-3xl shadow-2xl animate-in zoom-in-95 max-h-[90vh] overflow-y-auto"><div className="flex justify-between items-start mb-8 text-black"><div className="flex items-center gap-4"><div className="p-3 bg-emerald-100 text-emerald-600 rounded-2xl"><Building2 size={24}/></div><div><h3 className="text-xl font-black text-slate-900 uppercase leading-none">Profil Sekolah</h3></div></div><button onClick={() => setShowSchoolProfileModal(false)} className="text-slate-300 hover:text-slate-500 transition-colors"><X size={24}/></button></div><div className="grid grid-cols-2 gap-6 text-black font-black uppercase">{[{k:'name', l:'Sekolah'}, {k:'npsn', l:'NPSN'}, {k:'address', l:'Alamat'}, {k:'kabupaten', l:'Kabupaten'}, {k:'provinsi', l:'Provinsi'}, {k:'kurikulum', l:'Kurikulum'}, {k:'peminatan', l:'Peminatan'}, {k:'tahunLulus', l:'Tahun Lulus'}, {k:'pengawasNama', l:'Pengawas'}, {k:'pengawasNip', l:'NIP Pengawas'}, {k:'kepsek', l:'Kepala Sekolah'}, {k:'nip', l:'NIP Kepsek'}, {k:'nomorSuratBase', l:'No Surat'}, {k:'tglLulus', l:'Tgl Lulus'}].map(f => (<div key={f.k} className="space-y-1.5 uppercase font-black text-slate-400"><label className="text-[10px] font-black text-slate-400 uppercase ml-1 tracking-widest">{f.l}</label><input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-5 py-3 font-bold text-slate-800 outline-none focus:ring-4 focus:ring-emerald-500/10 transition-all uppercase" value={schoolInfo[f.k]} onChange={(e) => setSchoolInfo({...schoolInfo, [f.k]: e.target.value})} /></div>))}</div><button onClick={() => { setShowSchoolProfileModal(false); showToast("Disimpan"); }} className="mt-10 w-full py-4.5 bg-[#064e3b] text-white rounded-2xl font-black text-xs uppercase shadow-xl hover:bg-emerald-600 transition-all">Simpan Profil</button></div></div> )}
+      {showCloudPopUp && ( <div className="fixed inset-0 z-[160] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in text-slate-800"><div className="bg-white rounded-[40px] p-10 w-full max-w-lg shadow-2xl animate-in zoom-in-95 text-center font-black uppercase"><h3>Sinkronisasi Cloud</h3><div className="flex gap-4 mt-8"><button onClick={() => setShowCloudPopUp(false)} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase border border-slate-200 rounded-2xl">Batal</button><button onClick={() => { saveToCloud(); setShowCloudPopUp(false); }} className="flex-1 py-4 bg-emerald-600 text-white font-black text-xs rounded-2xl uppercase shadow-xl">Sinkron Sekarang</button></div></div></div> )}
+      {showSaveSuccessPopUp && ( <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in text-slate-800"><div className="bg-white rounded-[40px] p-12 w-full max-sm shadow-2xl text-center relative overflow-hidden font-black uppercase"><h3>Tersimpan Permanen</h3><button onClick={() => setShowSaveSuccessPopUp(false)} className="mt-8 w-full py-4.5 bg-slate-900 text-white rounded-2xl font-black uppercase">Lanjutkan</button></div></div> )}
+      {showAddYearModal && ( <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in text-slate-800"><div className="bg-white rounded-[40px] p-10 w-full max-w-xs shadow-2xl animate-in zoom-in-95 text-center font-black uppercase"><h3>Periode Baru</h3><input autoFocus type="text" placeholder="2025/2026" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 font-black outline-none focus:ring-4 focus:ring-blue-500/10 text-center uppercase" value={newYearName} onChange={(e) => setNewYearName(e.target.value)} onKeyDown={(e) => { if(e.key==='Enter') addYear(); }} /><div className="flex gap-4 pt-8"><button onClick={() => setShowAddYearModal(false)} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase">Batal</button><button onClick={addYear} className="flex-1 py-4 bg-blue-600 text-white font-black text-xs rounded-2xl uppercase">Simpan</button></div></div></div> )}
+      {showAddClassModal && ( <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in text-slate-800"><div className="bg-white rounded-[40px] p-10 w-full max-w-xs shadow-2xl animate-in zoom-in-95 text-center font-black uppercase"><h3>Tambah Kelas</h3><input autoFocus type="text" placeholder="XII MIPA 2" className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 font-black outline-none focus:ring-4 focus:ring-blue-500/10 text-center uppercase" value={newClassName} onChange={(e) => setNewClassName(e.target.value)} onKeyDown={(e) => { if(e.key==='Enter') addClass(); }} /><div className="flex gap-4 pt-8"><button onClick={() => setShowAddClassModal(false)} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase">Batal</button><button onClick={addClass} className="flex-1 py-4 bg-emerald-600 text-white font-black text-xs rounded-2xl shadow-xl uppercase">Buat</button></div></div></div> )}
+      {confirmModal.show && ( <div className="fixed inset-0 z-[160] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-in fade-in text-slate-800"><div className="bg-white rounded-[40px] p-10 w-full max-w-md shadow-2xl text-center font-black uppercase"><h3>Hapus Data?</h3><div className="flex gap-4 mt-8"><button onClick={() => setConfirmModal({show:false})} className="flex-1 py-4 font-black text-xs text-slate-400 uppercase border border-slate-200 rounded-2xl">Batal</button><button onClick={confirmModal.action} className="flex-1 py-4 bg-red-600 text-white font-black text-xs rounded-2xl uppercase shadow-xl">Hapus</button></div></div></div> )}
+
+      {/* --- PRINT LAYER (DOM NESTING FIXED - NO EXTRA WHITESPACES IN TR) --- */}
+      <div className="hidden print:block bg-white text-black font-serif text-[10px] leading-tight font-black uppercase">
+        {activeReport === 'dkn' && (
+          <div className="w-full p-4 bg-white overflow-hidden text-black uppercase font-black">
+             <div className="text-center mb-6 text-black uppercase font-black"><h1 className="text-lg font-bold underline uppercase leading-none">DAFTAR KOLEKTIF NILAI RAPOR, NILAI PSAJ DAN NSP</h1><h2 className="text-md font-bold uppercase mt-1">TAHUN PELAJARAN {selectedYear}</h2></div>
+             <div className="grid grid-cols-2 text-[10px] mb-4 gap-y-1 font-bold text-black uppercase">
+                <div className="grid grid-cols-[100px_10px_1fr]"><span>Nama Sekolah</span><span>:</span><span>{schoolInfo.name}</span><span>NPSN</span><span>:</span><span>{schoolInfo.npsn}</span><span>Alamat Sekolah</span><span>:</span><span>{schoolInfo.address}</span><span>Kabupaten</span><span>:</span><span>{schoolInfo.kabupaten}</span></div>
+                <div className="grid grid-cols-[100px_10px_1fr]"><span>Kurikulum</span><span>:</span><span>{schoolInfo.kurikulum}</span><span>Peminatan</span><span>:</span><span>{schoolInfo.peminatan}</span><span>Tahun Lulus</span><span>:</span><span>{schoolInfo.tahunLulus}</span><span>Provinsi</span><span>:</span><span>{schoolInfo.provinsi}</span></div>
+             </div>
+             <table className="w-full border-collapse border border-black text-[8px] leading-tight font-sans text-black uppercase">
+                <thead>
+                   <tr className="bg-white uppercase text-black font-black"><th className="border border-black p-1 w-6 text-center" rowSpan="3">NO</th><th className="border border-black p-1 w-40 text-center" rowSpan="3">NAMA PESERTA<br/>TTL<br/>NAMA ORTU<br/>NIS/NISN</th><th className="border border-black p-1 w-10 text-center" rowSpan="3">SMT/<br/>NR<br/>NUSP<br/>NSP</th><th className="border border-black p-1 text-center font-black uppercase" colSpan="6">KELOMPOK A</th><th className="border border-black p-1 text-center font-black uppercase" colSpan="4">KELOMPOK B</th><th className="border border-black p-1 text-center font-black uppercase" colSpan="5">KELOMPOK C</th><th className="border border-black p-1 w-10 text-center font-black uppercase" rowSpan="3">RATA NR/<br/>NSAJ<br/>NSP</th><th className="border border-black p-1 w-10 text-center font-black uppercase" rowSpan="3">SIKAP</th><th className="border border-black p-1 w-16 text-center font-black uppercase" rowSpan="3">LULUS /<br/>TIDAK</th></tr>
+                   <tr className="bg-white text-black font-black uppercase text-center">{SUBJECTS.map(s => <th key={s.id} className="border border-black p-1 vertical-text h-32 text-center font-black uppercase">{s.name}</th>)}</tr>
+                </thead>
+                <tbody>
+                   {filteredStudents.map((s, idx) => { 
+                      const calc = getCalculatedData(s); const rows = ["I", "II", "III", "IV", "V", "VI", "NR", "NR x 70%", "PSAJ", "PSAJ x 30%", "NSP"]; 
+                      return (
+                         <React.Fragment key={`dkn-${s.id}`}>
+                            {rows.map((rowLabel, rIdx) => (
+                               <tr key={`row-${s.id}-${rIdx}`} className="text-black font-black uppercase text-center">
+                                  {rIdx === 0 && (
+                                     <React.Fragment>
+                                        <td className="border border-black p-0.5 font-black uppercase" rowSpan="11">{idx + 1}</td>
+                                        <td className="border border-black p-1 align-top text-left font-black uppercase" rowSpan="11"><p className="mb-1 uppercase">{s.nama}</p><p className="mb-1 font-medium">{s.tempatLahir}, {s.tglLahir}</p><p className="mb-1 uppercase font-medium">{s.ortu}</p><p className="mb-1 font-medium">{s.nis} / {s.nisn}</p></td>
+                                     </React.Fragment>
+                                  )}
+                                  <td className="border border-black p-0.5 font-bold font-black uppercase text-black">{rowLabel}</td>
+                                  {SUBJECTS.map(sub => { let val = ""; if (rIdx < 6) val = calc.results[sub.id]?.smt[rIdx]; else if (rowLabel === "NR") val = calc.results[sub.id]?.nr; else if (rowLabel === "NR x 70%") val = calc.results[sub.id]?.nr70; else if (rowLabel === "PSAJ") val = calc.results[sub.id]?.psajMurni; else if (rowLabel === "PSAJ x 30%") val = calc.results[sub.id]?.psaj30; else if (rowLabel === "NSP") val = calc.results[sub.id]?.nsp; return <td key={`cell-${sub.id}`} className="border border-black p-0.5 font-black uppercase">{val}</td> })}
+                                  <td className="border border-black p-0.5 font-bold font-black uppercase text-black">{(rIdx === 6 || rIdx === 8 || rIdx === 10) ? calc.overallAvg : ""}</td>
+                                  {rIdx === 0 && (
+                                     <React.Fragment>
+                                        <td className="border border-black p-1 font-black uppercase" rowSpan="11">B</td>
+                                        <td className="border border-black p-1 font-black uppercase" rowSpan="11">{calc.isLulus ? "LULUS" : "TIDAK"}</td>
+                                     </React.Fragment>
+                                  )}
+                               </tr>
+                            ))} 
+                         </React.Fragment>
+                      ); 
+                   })}
+                </tbody>
+             </table>
+             <div className="mt-8 flex justify-between px-10 text-[10px] font-sans font-bold text-black uppercase">
+                <div className="text-center w-64 uppercase font-black text-black"><p className="mb-1 uppercase text-black">Mengetahui,</p><p className="mb-16 uppercase text-black">Pengawas Pembina,</p><p className="underline uppercase text-black font-black">{schoolInfo.pengawasNama}</p><p className="text-black font-black">NIP. {schoolInfo.pengawasNip}</p></div>
+                <div className="text-center w-64 uppercase font-black text-black"><p className="mb-1 uppercase text-black">{schoolInfo.kabupaten}, {schoolInfo.tglLulus}</p><p className="mb-16 uppercase text-black">Kepala Sekolah,</p><p className="underline uppercase text-black font-black">{schoolInfo.kepsek}</p><p className="text-black font-black">NIP. {schoolInfo.nip}</p></div>
+             </div>
+          </div>
+        )}
+
+        {(activeReport === 'raport' || activeReport === 'psaj' || activeReport === 'ijazah') && (
+          <div className="w-full p-6 bg-white overflow-hidden text-black uppercase font-black">
+             <div className="text-center mb-6 text-black uppercase font-black"><h1 className="text-lg font-bold underline uppercase leading-none text-black font-black">DAFTAR NILAI KOLEKTIF</h1><h2 className="text-md font-bold uppercase mt-1 text-black font-black">{activeReport === 'psaj' ? 'PENILAIAN SUMATIF AKHIR JENJANG (PSAJ)' : activeReport === 'ijazah' ? 'NILAI IJAZAH (NSP)' : 'RATA-RATA RAPOR SEMESTER 1 - 6'}</h2></div>
+             <table className="w-full border-collapse border-2 border-black text-[9px] font-sans text-black font-black uppercase text-center">
+                <thead className="bg-white uppercase text-black font-black text-center">
+                   <tr>
+                      <th className="border-2 border-black p-1 w-6 text-black font-black">NO</th>
+                      <th className="border-2 border-black p-1 w-48 text-left font-black text-black">NAMA SISWA</th>
+                      <th className="border-2 border-black p-1 w-20 font-black text-black">NISN</th>
+                      {SUBJECTS.map(s => <th key={s.id} className="border border-black p-1 vertical-text h-24 text-center font-black text-black">{s.name}</th>)}
+                      <th className="border-2 border-black p-1 w-16 text-center font-black text-black">RATA</th>
+                   </tr>
+                </thead>
+                <tbody>
+                   {filteredStudents.map((s, idx) => { 
+                      const calc = getCalculatedData(s); 
+                      return (
+                         <tr key={`sum-${activeReport}-${s.id}`} className="text-center font-black text-black uppercase">
+                            <td className="border-2 border-black p-1 font-black text-black">{idx + 1}</td>
+                            <td className="border-2 border-black p-1 font-bold text-left uppercase truncate font-black text-black">{s.nama}</td>
+                            <td className="border-2 border-black p-1 font-black text-black">{s.nisn}</td>
+                            {SUBJECTS.map(sub => (<td key={sub.id} className="border-2 border-black p-1 font-bold font-black text-black">{activeReport === 'psaj' ? calc.results[sub.id]?.psaj30 : activeReport === 'raport' ? calc.results[sub.id]?.nr : calc.results[sub.id]?.nsp}</td>))}
+                            <td className="border-2 border-black p-1 font-black bg-white text-black font-black uppercase">{calc.overallAvg}</td>
+                         </tr>
+                      ); 
+                   })}
+                </tbody>
+             </table>
+             <div className="mt-8 flex justify-between px-10 text-[10px] font-sans font-bold text-black uppercase font-black">
+                <div className="text-center w-64 uppercase font-black text-black"><p className="mb-1 uppercase text-black font-black">Mengetahui,</p><p className="mb-16 uppercase text-black font-black">Pengawas Pembina,</p><p className="underline uppercase text-black font-black">{schoolInfo.pengawasNama}</p><p className="font-black text-black font-black">NIP. {schoolInfo.pengawasNip}</p></div>
+                <div className="text-center w-64 uppercase font-black text-black"><p className="mb-1 uppercase text-black font-black">{schoolInfo.kabupaten}, {schoolInfo.tglLulus}</p><p className="mb-16 uppercase text-black font-black">Kepala Sekolah,</p><p className="underline uppercase text-black font-black">{schoolInfo.kepsek}</p><p className="font-black text-black font-black">NIP. {schoolInfo.nip}</p></div>
+             </div>
+          </div>
+        )}
+
+        {activeReport === 'skl' && ( studentsToPrint.map(student => { 
+           const calc = getCalculatedData(student); 
+           return ( 
+              <div key={`skl-${student.id}`} className="w-full min-h-screen p-[1.5cm] flex flex-col bg-white text-black font-serif uppercase font-black" style={{ pageBreakAfter: 'always' }}>
+                 <div className="text-center mb-6 text-black uppercase font-black"><h1 className="text-2xl font-bold uppercase underline">SURAT KETERANGAN LULUS</h1><p className="text-md font-bold font-sans">Nomor: {schoolInfo.nomorSuratBase}</p></div>
+                 <div className="mb-6 leading-relaxed text-sm text-black normal-case font-medium text-black uppercase font-black"><p>Yang Bertanda tangan dibawah ini, Kepala Sekolah {schoolInfo.name}</p><p>Kabupaten {schoolInfo.kabupaten} dengan Nomor Pokok Sekolah Nasional : {schoolInfo.npsn}</p><p className="mt-2">Menerangkan Bahwa :</p></div>
+                 <div className="grid grid-cols-[220px_10px_1fr] gap-x-2 text-[15px] mb-8 font-bold font-sans px-10 text-black uppercase font-black"><span>Nama</span><span>:</span><span className="uppercase">{student.nama}</span><span>Tempat dan Tanggal Lahir</span><span>:</span><span>{student.tempatLahir}, {student.tglLahir}</span><span>Nama Orangtua/Wali</span><span>:</span><span className="uppercase">{student.ortu}</span><span>Nomor Induk Siswa</span><span>:</span><span>{student.nis}</span><span>Nomor Induk Siswa Nasional</span><span>:</span><span>{student.nisn}</span></div>
+                 <div className="text-center py-8 mb-4 text-black uppercase font-black"><span className="text-6xl font-black border-[8px] border-black px-32 py-6 inline-block tracking-[0.2em] italic">LULUS</span></div>
+                 <div className="text-sm leading-relaxed mb-8 px-2 text-justify text-black normal-case font-medium uppercase font-black"><p>dari sekolah menengah atas setelah memenuhi seluruh kriteria kelulusan sesuai dengan Surat Keputusan Kepala {schoolInfo.name} Nomor : {schoolInfo.nomorSuratBase} Tanggal 17 Februari 2025 Tentang Kriteria Kelulusan. Kelulusan diumumkan pada tanggal {schoolInfo.tglLulus} dengan nilai Ujian Sekolah sebagaimana terlampir.</p></div>
+                 <div className="flex justify-end mt-4 text-black uppercase font-black"><div className="text-center w-80 text-black uppercase font-black font-sans"><p>Malo, {schoolInfo.tglLulus}</p><p className="font-bold mb-24 uppercase">Kepala Sekolah,</p><p className="font-bold underline text-lg">{schoolInfo.kepsek}</p><p className="text-xs font-sans">NIP. {schoolInfo.nip}</p></div></div>
+                 <div style={{ pageBreakBefore: 'always' }} className="mt-10 uppercase font-black">
+                    <div className="text-center mb-8 border-b-4 border-double border-black pb-4 text-black uppercase font-black"><h1 className="text-xl font-bold uppercase">DAFTAR NILAI</h1><h2 className="text-lg font-bold uppercase">{schoolInfo.name}</h2><p className="text-sm font-medium">TAHUN PELAJARAN {selectedYear}</p></div>
+                    <table className="w-full border-collapse border-2 border-black text-[13px] font-sans text-black font-black uppercase">
+                       <thead><tr className="bg-white font-bold uppercase text-black font-black text-center"><th className="border-2 border-black p-3 w-12 text-center">NO</th><th className="border-2 border-black p-3 text-left">MATA PELAJARAN (K-2013)</th><th className="border-2 border-black p-3 w-32 text-center">NILAI AKHIR</th></tr></thead>
+                       <tbody>
+                          <tr className="bg-white font-bold italic text-black font-black"><td className="border-2 border-black px-3 py-1.5" colSpan="3">Kelompok A (Umum)</td></tr>
+                          {SUBJECTS.filter(s => s.category === 'A').map((sub, i) => (<tr key={sub.id} className="text-center font-black"><td className="border-2 border-black p-3">{i+1}</td><td className="border-2 border-black p-3 text-left uppercase">{sub.name}</td><td className="border-2 border-black p-3 font-bold text-lg">{calc.results[sub.id]?.nsp}</td></tr>))}
+                          <tr className="bg-white font-bold italic text-black font-black"><td className="border-2 border-black px-3 py-1.5" colSpan="3">Kelompok B (Umum)</td></tr>
+                          {SUBJECTS.filter(s => s.category === 'B').map((sub, i) => (<tr key={sub.id} className="text-center font-black"><td className="border-2 border-black p-3">{i+1}</td><td className="border-2 border-black p-3 text-left uppercase">{sub.name}</td><td className="border-2 border-black p-3 font-bold text-lg">{calc.results[sub.id]?.nsp}</td></tr>))}
+                          <tr className="bg-white font-bold italic text-black font-black"><td className="border-2 border-black px-3 py-1.5" colSpan="3">Kelompok C (Peminatan)</td></tr>
+                          {SUBJECTS.filter(s => s.category === 'C').map((sub, i) => (<tr key={sub.id} className="text-center font-black"><td className="border-2 border-black p-3">{i+1}</td><td className="border-2 border-black p-3 text-left uppercase">{sub.name}</td><td className="border-2 border-black p-3 font-bold text-lg">{calc.results[sub.id]?.nsp}</td></tr>))}
+                          <tr className="font-black bg-white uppercase font-black text-black"><td className="border-2 border-black p-4 text-right uppercase" colSpan="2">RATA-RATA NILAI AKHIR</td><td className="border-2 border-black p-4 text-center text-2xl font-serif">{calc.overallAvg}</td></tr>
+                       </tbody>
+                    </table>
+                 </div>
+              </div> 
+           ); 
+        }))}
+      </div>
+
+      <style>{`
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        select { -webkit-appearance: none; appearance: none; }
+        .vertical-text { writing-mode: vertical-rl; transform: rotate(180deg); white-space: nowrap; }
+        @media print { 
+          @page { size: A4 landscape; margin: 0; } 
+          body { background: white !important; margin: 0 !important; color: black !important; } 
+          .print\\:hidden { display: none !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
